@@ -16,6 +16,7 @@ class PlugIn(MetaEnv):
     observation_space = spaces.Box(np.array([-1]), np.array([1]))
     def __init__(self, client, offset=[0,0,0], args=[]):
         self.rest_poses=[-3.126411132142109, -1.3986403400756737, 1.8925739340152319, 2.9060338696988457, -0.013029828104559682, -0.28757678821903976]
+        self.t_steps = 0
         super(PlugIn, self).__init__(client, offset)
         
 
@@ -23,8 +24,9 @@ class PlugIn(MetaEnv):
         self.p.configureDebugVisualizer(self.p.COV_ENABLE_RENDERING,1)        
         self.gravity = [0,0,-9.8]
         self.p.setGravity(self.gravity[0], self.gravity[1], self.gravity[2])
+
         # ur init
-        self.urEndEffectorIndex = 7 # !!!!!
+        self.urEndEffectorIndex = 7
         self.urNumDofs = 6
         ur_base_pose = np.array([0, 0.0, -0.1])+self.offset
         table_base_pose = np.array([0.0,-0.5,-1.3])+self.offset
@@ -37,12 +39,26 @@ class PlugIn(MetaEnv):
                             basePosition=np.array([0.4,0.3,0.5])+self.offset, baseOrientation=base_orn,
                             globalScaling=1)
 
+        # init wall
+        # self.wall_id = self.p.loadURDF(os.path.join(os.path.dirname(os.path.realpath(__file__)),"assets/urdf/charge_board.urdf"),
+        #                     basePosition=np.array([-3.,1.8,0])+self.offset, baseOrientation=base_orn,
+        #                     globalScaling=50)
+
         # init camera
         self._init_camera_param()
         self.end_axes = DebugAxes(self.p)
         self.camera_axes = DebugAxes(self.p)
 
     def _reset_internals(self):
+        # reset charge board pose
+        self.p.resetJointState(self.objectUid, 1, random.random() * (-math.pi/3))
+
+        # reset ur
+        self.reset_ur(self.rest_poses)
+
+        # reset t_steps
+        self.t_steps = 0
+        
         self.vol_bnds = np.array([
             [-2,2],
             [-2,2],
@@ -52,6 +68,8 @@ class PlugIn(MetaEnv):
 
 
     def apply_action(self, action):
+        self.t_steps += 1
+
         action = np.clip(action, self.action_space.low,self.action_space.high)
         self.ur_execute(action, self.urEndEffectorIndex, self.urNumDofs)
 
@@ -64,11 +82,6 @@ class PlugIn(MetaEnv):
 
     def reset(self, hard_reset=False):
         super().reset(hard_reset=hard_reset)
-        self.reset_ur(self.rest_poses)
-        self.p.resetJointState(self.objectUid, 1, random.random() * (-math.pi/3))
-        # self.p.changeDynamics(self.objectUid, -1, linearDamping=0, angularDamping=0)
-        
-
 
         obs = []
         return obs
@@ -144,7 +157,8 @@ class PlugIn(MetaEnv):
         # cam_pose[:3, :3] = R.from_quat(end_orn).as_matrix()
         # cam_pose[:3, 3] = end_pos
 
-        self.tsdf_vol.integrate(color_image, depth_im, self.camera_intr, wcT, obs_weight=1)
+        self.tsdf_vol.integrate(color_image, depth_im, self.camera_intr, wcT, obs_weight=1) #self.t_steps / 2000.
+        print("dd", self.t_steps, self.t_steps/2000.)
     
     def pc_visualization(self):
         raw_pc = self.tsdf_vol.get_point_cloud()
