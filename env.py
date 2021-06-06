@@ -13,7 +13,7 @@ from utils import fusion
 
 class PlugIn(MetaEnv):
     action_space=spaces.Box(np.array([-0.8,0,0,-math.pi,-math.pi,-math.pi]),np.array([0.8,0.8,0.8,math.pi,math.pi,math.pi]))
-    observation_space = spaces.Box(np.array([-1]), np.array([1]))
+    observation_space = spaces.Box(np.array([0,0,0,-math.pi/3*2]), np.array([1,1,1,0]))
     def __init__(self, client, offset=[0,0,0], args=[]):
         self.rest_poses=[-3.126411132142109, -1.3986403400756737, 1.8925739340152319, 2.9060338696988457, -0.013029828104559682, -0.28757678821903976]
         self.t_steps = 0
@@ -40,9 +40,9 @@ class PlugIn(MetaEnv):
                             globalScaling=1)
 
         # init wall
-        # self.wall_id = self.p.loadURDF(os.path.join(os.path.dirname(os.path.realpath(__file__)),"assets/urdf/charge_board.urdf"),
-        #                     basePosition=np.array([-3.,1.8,0])+self.offset, baseOrientation=base_orn,
-        #                     globalScaling=50)
+        self.wall_id = self.p.loadURDF(os.path.join(os.path.dirname(os.path.realpath(__file__)),"assets/urdf/wall.urdf"),
+                            basePosition=np.array([0,0,0])+self.offset, baseOrientation=base_orn,
+                            globalScaling=1)
 
         # init camera
         self._init_camera_param()
@@ -52,6 +52,7 @@ class PlugIn(MetaEnv):
     def _reset_internals(self):
         # reset charge board pose
         self.p.resetJointState(self.objectUid, 1, random.random() * (-math.pi/3))
+        self.last_charge_board_angle = self.p.getJointState(self.objectUid, 1)[0]
 
         # reset ur
         self.reset_ur(self.rest_poses)
@@ -60,11 +61,11 @@ class PlugIn(MetaEnv):
         self.t_steps = 0
         
         self.vol_bnds = np.array([
-            [-2,2],
-            [-2,2],
-            [-2,2]
+            [-1,1],
+            [0,1],
+            [0,1]
         ])
-        self.tsdf_vol = fusion.TSDFVolume(self.vol_bnds, voxel_size=0.01)
+        self.tsdf_vol = fusion.TSDFVolume(self.vol_bnds, voxel_size=0.01, use_gpu=False)
 
 
     def apply_action(self, action):
@@ -73,17 +74,68 @@ class PlugIn(MetaEnv):
         action = np.clip(action, self.action_space.low,self.action_space.high)
         self.ur_execute(action, self.urEndEffectorIndex, self.urNumDofs)
 
+    
     def get_info(self):
-        self.tsdf_fusion()
-        self.update_debug_axes()
+        # self.tsdf_fusion()
+        # self.update_debug_axes()
+        
+        # pre information
+        charge_board_angle = self.p.getJointState(self.objectUid, 1)[0]
+        charge_board_pos =  self.p.getBasePositionAndOrientation(self.objectUid)[0]
+
+        # obs: point cloud [N, 6(xyzrgb)]
+        # obs = self.tsdf_vol.get_point_cloud()
+        # obs = self.clip_wall(obs)
+        obs = np.array(list(charge_board_pos) + [charge_board_angle])
+
+        # reward
+        '''
+        r_angle: angle range is (-1.5pi, 0), so reward range is (0, 10)
+        r_time:  time penalty for each step
+        
+        '''
+        r_angle = -(charge_board_angle - self.last_charge_board_angle) / (math.pi / 1.5) * 10
+        r_time = -0.5
+        reward = r_angle + r_time
+
+        # final judgement
+        if -(charge_board_angle) > math.pi/2:
+            reward += 200
+            self.done = True
+        if self.t_steps >= 1000:
+            reward -= 100
+            self.done = True
+
         info = {}
-        return 0.,0., self.done, info
+        self.last_charge_board_angle = charge_board_angle
+        return obs, reward, self.done, info
 
 
     def reset(self, hard_reset=False):
         super().reset(hard_reset=hard_reset)
 
-        obs = []
+        # pre obs for charge board state
+        obs_pose = [
+            [-3.128131071623655, -1.2414610399136525, 1.8258329622003724, 2.8706073343287564, -0.011172261804459214, -0.3425833826175039],
+            [-3.1262003467436346, -1.329971807874537, 1.6681092651899825, 3.005095631042998, -0.013452587907487027, -0.23085354625372234],
+            [-3.1230784274083905, -1.5456002864163734, 1.9255236548884849, 2.9329736153844266, -0.01658189605651681, -0.20051289436702005],
+            [-3.127199058751807, -1.4437684431121238, 2.09816608731214, 2.7974258076294687, -0.012069409309346179, -0.33942406315580015],
+            [-3.126411132142109, -1.3986403400756737, 1.8925739340152319, 2.9060338696988457, -0.013029828104559682, -0.28757678821903976],
+        ]
+        for i in obs_pose:
+            self.reset_ur(i)
+            self.tsdf_fusion()
+
+        # obs = self.tsdf_vol.get_point_cloud()
+        # obs = self.clip_wall(obs)
+
+        charge_board_angle = self.p.getJointState(self.objectUid, 1)[0]
+        charge_board_pos =  self.p.getBasePositionAndOrientation(self.objectUid)[0]
+
+        # obs: point cloud [N, 6(xyzrgb)]
+        # obs = self.tsdf_vol.get_point_cloud()
+        # obs = self.clip_wall(obs)
+        obs = np.array(list(charge_board_pos) + [charge_board_angle])
         return obs
 
     def render(self, mode='rgb_array'):
@@ -158,10 +210,21 @@ class PlugIn(MetaEnv):
         # cam_pose[:3, 3] = end_pos
 
         self.tsdf_vol.integrate(color_image, depth_im, self.camera_intr, wcT, obs_weight=1) #self.t_steps / 2000.
-        print("dd", self.t_steps, self.t_steps/2000.)
+
+    def clip_wall(self, pc):
+        new_pc = []
+        for i in pc:
+            x,y,z, _, _, _ = i
+            if x < 0.8 and y < 0.8:
+                new_pc.append(list(i))
+        new_pc = np.array(new_pc)
+        return new_pc
     
     def pc_visualization(self):
         raw_pc = self.tsdf_vol.get_point_cloud()
+        raw_pc = self.clip_wall(raw_pc)
+        # print("shape", raw_pc.shape)
+        # print("test value",raw_pc[0][0], raw_pc[1][0])
         pc = open3d.geometry.PointCloud()
         pc.points = open3d.utility.Vector3dVector(raw_pc[:,:3])
         pc.colors = open3d.utility.Vector3dVector(raw_pc[:,3:6]/256)

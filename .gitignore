@@ -107,6 +107,7 @@ celerybeat.pid
 env/
 venv/
 ENV/
+
 env.bak/
 venv.bak/
 
@@ -130,3 +131,7 @@ dmypy.json
 
 # test
 test*
+
+# training stuff
+PPO_logs/*
+PPO_preTrained/*
