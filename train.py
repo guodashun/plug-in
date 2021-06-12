@@ -138,6 +138,10 @@ def train():
     checkpoint_path = directory + "PPO_{}_{}_{}.pth".format(env_name, random_seed, run_num_pretrained)
     print("save checkpoint path : " + checkpoint_path)
 
+    pre_trained_model = None # f"{directory}4_with_amplify_reward/PPO_plug-in_2.0.pth"
+
+
+
     #####################################################
 
 
@@ -201,7 +205,9 @@ def train():
     # initialize a PPO agent
     ppo_agent = PPO(state_dim, action_dim, lr_actor, lr_critic, gamma, K_epochs, eps_clip, has_continuous_action_space, action_std)
 
-
+    # load pre_trained model
+    if pre_trained_model:
+        ppo_agent.load(pre_trained_model)
 
     # track total training time
     start_time = datetime.now().replace(microsecond=0)
@@ -220,6 +226,9 @@ def train():
     print_running_episodes = 0
 
     log_running_reward = 0
+    log_running_reward_angle = 0
+    log_running_reward_togoal = 0
+    log_running_reward_success = 0
     log_running_episodes = 0
 
     time_step = 0
@@ -233,17 +242,21 @@ def train():
         # state,_ = pointnet2(state_extract(state))
         state = state[0]
         current_ep_reward = 0
+        current_ep_reward_angle = 0
+        current_ep_reward_togoal = 0
+        current_ep_reward_success = 0
 
         for t in range(1, max_ep_len+1):
 
             # select action with policy
             action = ppo_agent.select_action(state)
-            state, reward, done, _ = env.step([action])
+            state, reward, done, info = env.step([action])
             # print("state shape: ", state[0].shape)
             # state,_ = pointnet2(state_extract(state))
             state = state[0]
             reward = reward[0]
             done = done[0]
+            info = info[0]
 
             # saving reward and is_terminals
             ppo_agent.buffer.rewards.append(reward)
@@ -251,7 +264,10 @@ def train():
 
             time_step +=1
             current_ep_reward += reward
-            print("timestep: ", time_step, "reward: ", reward)
+            current_ep_reward_angle += info['r_angle']
+            current_ep_reward_togoal += info['r_togoal']
+            current_ep_reward_success += info['r_success']
+            # print("timestep: ", time_step, "reward: ", reward)
 
             # update PPO agent
             if time_step % update_timestep == 0:
@@ -268,14 +284,23 @@ def train():
 
                 # log average reward till last episode
                 log_avg_reward = log_running_reward / log_running_episodes
+                log_avg_reward_angle = log_running_reward_angle / log_running_episodes
+                log_avg_reward_togoal = log_running_reward_togoal / log_running_episodes
+                log_avg_reward_success = log_running_reward_success / log_running_episodes
                 log_avg_reward = round(log_avg_reward, 4)
 
                 writer.add_scalar('train/reward', log_avg_reward, i_episode)
+                writer.add_scalar('train/reward_angle', log_avg_reward_angle, i_episode)
+                writer.add_scalar('train/reward_togoal', log_avg_reward_togoal, i_episode)
+                writer.add_scalar('train/reward_success', log_avg_reward_success, i_episode)
 
                 # log_f.write('{},{},{}\n'.format(i_episode, time_step, log_avg_reward))
                 # log_f.flush()
 
                 log_running_reward = 0
+                log_running_reward_angle = 0
+                log_running_reward_togoal = 0
+                log_running_reward_success = 0
                 log_running_episodes = 0
 
             # printing average reward
@@ -294,7 +319,7 @@ def train():
             if time_step % save_model_freq == 0:
                 print("--------------------------------------------------------------------------------------------")
                 print("saving model at : " + checkpoint_path)
-                ppo_agent.save(checkpoint_path)
+                ppo_agent.save(f"{directory}PPO_{env_name}_{time_step/save_model_freq}.pth")
                 print("model saved")
                 print("Elapsed Time  : ", datetime.now().replace(microsecond=0) - start_time)
                 print("--------------------------------------------------------------------------------------------")
@@ -307,6 +332,9 @@ def train():
         print_running_episodes += 1
 
         log_running_reward += current_ep_reward
+        log_running_reward_angle += current_ep_reward_angle
+        log_running_reward_togoal += current_ep_reward_togoal
+        log_running_reward_success += current_ep_reward_success
         log_running_episodes += 1
 
         i_episode += 1

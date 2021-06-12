@@ -15,7 +15,7 @@ class PlugIn(MetaEnv):
     action_space=spaces.Box(np.array([-0.8,0,0,-math.pi,-math.pi,-math.pi]),np.array([0.8,0.8,0.8,math.pi,math.pi,math.pi]))
     observation_space = spaces.Box(np.array([0,0,0,-math.pi/3*2]), np.array([1,1,1,0]))
     def __init__(self, client, offset=[0,0,0], args=[]):
-        self.rest_poses=[-3.126411132142109, -1.3986403400756737, 1.8925739340152319, 2.9060338696988457, -0.013029828104559682, -0.28757678821903976]
+        self.rest_poses=[-2.958053164015294, -1.0552718630048874, 1.1467586583479306, 3.0225408361570927, -0.1819490742297129, -0.0016277272816431882]
         self.t_steps = 0
         super(PlugIn, self).__init__(client, offset)
         
@@ -45,9 +45,9 @@ class PlugIn(MetaEnv):
                             globalScaling=1)
 
         # init camera
-        self._init_camera_param()
-        self.end_axes = DebugAxes(self.p)
-        self.camera_axes = DebugAxes(self.p)
+        # self._init_camera_param()
+        # self.end_axes = DebugAxes(self.p)
+        # self.camera_axes = DebugAxes(self.p)
 
     def _reset_internals(self):
         # reset charge board pose
@@ -59,13 +59,14 @@ class PlugIn(MetaEnv):
 
         # reset t_steps
         self.t_steps = 0
+        self.success = False
         
-        self.vol_bnds = np.array([
-            [-1,1],
-            [0,1],
-            [0,1]
-        ])
-        self.tsdf_vol = fusion.TSDFVolume(self.vol_bnds, voxel_size=0.01, use_gpu=False)
+        # self.vol_bnds = np.array([
+        #     [-1,1],
+        #     [0,1],
+        #     [0,1]
+        # ])
+        # self.tsdf_vol = fusion.TSDFVolume(self.vol_bnds, voxel_size=0.01, use_gpu=False)
 
 
     def apply_action(self, action):
@@ -82,6 +83,9 @@ class PlugIn(MetaEnv):
         # pre information
         charge_board_angle = self.p.getJointState(self.objectUid, 1)[0]
         charge_board_pos =  self.p.getBasePositionAndOrientation(self.objectUid)[0]
+        close_pos = list(charge_board_pos).copy()
+        close_pos[1] -= 0.04
+        eef_pos = self.p.getLinkState(self.ur_id, self.urEndEffectorIndex)[0]
 
         # obs: point cloud [N, 6(xyzrgb)]
         # obs = self.tsdf_vol.get_point_cloud()
@@ -90,23 +94,36 @@ class PlugIn(MetaEnv):
 
         # reward
         '''
-        r_angle: angle range is (-1.5pi, 0), so reward range is (0, 10)
-        r_time:  time penalty for each step
-        
+        r_angle:  angle range is (-1.5pi, 0), so reward range is (0, 100)
+        r_time:   time penalty for each step
+        r_togoal: give a dense reward at begin
         '''
-        r_angle = -(charge_board_angle - self.last_charge_board_angle) / (math.pi / 1.5) * 10
+        r_angle = -(charge_board_angle - self.last_charge_board_angle) / (math.pi / 1.5) * 100
         r_time = -0.5
-        reward = r_angle + r_time
+        r_togoal = -(np.linalg.norm(np.array(eef_pos)-np.array(close_pos))) + 0.5 \
+                   if np.linalg.norm(np.array(eef_pos)-np.array(close_pos)) > 0.1 else 0.4
+
+        # speed up training
+        if r_angle > 1e-5:
+            r_angle += 20
+        r_togoal /= 100
+        r_time = 0
+        
+        reward = r_angle + r_time + r_togoal
 
         # final judgement
         if -(charge_board_angle) > math.pi/2:
             reward += 200
             self.done = True
+            self.success = True
         if self.t_steps >= 1000:
-            reward -= 100
+            # reward -= 100
             self.done = True
 
         info = {}
+        info['r_angle'] = r_angle
+        info['r_togoal'] = r_togoal
+        info['r_success'] = 200 if self.success else 0
         self.last_charge_board_angle = charge_board_angle
         return obs, reward, self.done, info
 
@@ -115,16 +132,16 @@ class PlugIn(MetaEnv):
         super().reset(hard_reset=hard_reset)
 
         # pre obs for charge board state
-        obs_pose = [
-            [-3.128131071623655, -1.2414610399136525, 1.8258329622003724, 2.8706073343287564, -0.011172261804459214, -0.3425833826175039],
-            [-3.1262003467436346, -1.329971807874537, 1.6681092651899825, 3.005095631042998, -0.013452587907487027, -0.23085354625372234],
-            [-3.1230784274083905, -1.5456002864163734, 1.9255236548884849, 2.9329736153844266, -0.01658189605651681, -0.20051289436702005],
-            [-3.127199058751807, -1.4437684431121238, 2.09816608731214, 2.7974258076294687, -0.012069409309346179, -0.33942406315580015],
-            [-3.126411132142109, -1.3986403400756737, 1.8925739340152319, 2.9060338696988457, -0.013029828104559682, -0.28757678821903976],
-        ]
-        for i in obs_pose:
-            self.reset_ur(i)
-            self.tsdf_fusion()
+        # obs_pose = [
+        #     [-3.128131071623655, -1.2414610399136525, 1.8258329622003724, 2.8706073343287564, -0.011172261804459214, -0.3425833826175039],
+        #     [-3.1262003467436346, -1.329971807874537, 1.6681092651899825, 3.005095631042998, -0.013452587907487027, -0.23085354625372234],
+        #     [-3.1230784274083905, -1.5456002864163734, 1.9255236548884849, 2.9329736153844266, -0.01658189605651681, -0.20051289436702005],
+        #     [-3.127199058751807, -1.4437684431121238, 2.09816608731214, 2.7974258076294687, -0.012069409309346179, -0.33942406315580015],
+        #     [-3.126411132142109, -1.3986403400756737, 1.8925739340152319, 2.9060338696988457, -0.013029828104559682, -0.28757678821903976],
+        # ]
+        # for i in obs_pose:
+        #     self.reset_ur(i)
+        #     self.tsdf_fusion()
 
         # obs = self.tsdf_vol.get_point_cloud()
         # obs = self.clip_wall(obs)
